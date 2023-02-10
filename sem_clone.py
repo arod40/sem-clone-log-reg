@@ -28,11 +28,24 @@ label_column = "true-clone"
 positive_values = ["A", "B"]
 negative_values = ["N"]
 
+sigmoid = np.vectorize(
+    lambda x: 1 / (1 + np.e ** (-x)) if x > 0 else 1 - 1 / (1 + np.e ** (x))
+)
+
+def get_logistic_regression_classifier(thr=0.5):
+    def log_reg_class(X, w):
+        val = sigmoid(X @ w)
+        ones = np.ones(val.shape)
+        return (val >= thr) * ones
+    return log_reg_class
+
+
 def _threshold_predict(model, X, thr=0.5):
     probs = model.predict_proba(X) 
     return (probs[:, 1] > thr).astype(int)
 
-def fit_logistic_regression(*, training_data_file, threshold, dump_dir, **_):
+
+def fit_logistic_regression(*, training_data_file, threshold, save_dir, **_):
     print("Reading data...")
     df = read_csv(training_data_file)
     X_pos = df[df[label_column].isin(positive_values)][features_columns].to_numpy()
@@ -74,18 +87,43 @@ def fit_logistic_regression(*, training_data_file, threshold, dump_dir, **_):
     plt.ylabel('Actuals', fontsize=14)
     plt.title('Confusion Matrix', fontsize=18)
 
-    dump_dir = Path(dump_dir)
+    save_dir = Path(save_dir)
 
     # Save confusion matrix
-    fig.savefig(dump_dir / "confusion_matrix.png")
+    fig.savefig(save_dir / "confusion_matrix.png")
     print(log_reg.intercept_)
     model = {
         "coef": log_reg.coef_[0].tolist(),
-        "intercept": log_reg.intercept_[0]
+        "intercept": log_reg.intercept_[0],
+        "threshold": threshold,
     }
 
     # Save model parameters
-    (dump_dir / "model.json").write_text(json.dumps(model))
+    (save_dir / "model.json").write_text(json.dumps(model))
+
+
+def predict_on_csv(*, model_json, prediction_files, save_dir, **_):
+    save_dir = Path(save_dir)
+
+    for data_file, save_filename in prediction_files:
+        print(f"Predicting on: {data_file}")
+        
+        df = read_csv(data_file)
+        X = df[features_columns].to_numpy()
+        X = np.concatenate([np.ones((X.shape[0], 1)), X], axis=1)
+        model_dic = json.loads(Path(model_json).read_text())
+        w = np.array([model_dic["intercept"]] + model_dic["coef"])
+        
+        log_reg = get_logistic_regression_classifier(thr = model_dic["threshold"])
+        y_pred = log_reg(X,w)
+
+        names = []
+        for _, row in df.iloc[y_pred==1].iterrows():
+            names.append((row["cfg 1"], row["cfg 2"]))
+        
+        save_file = save_dir / save_filename
+        save_file.write_text(json.dumps(names))
+
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -103,9 +141,16 @@ if __name__ == "__main__":
     train_parser.set_defaults(func=fit_logistic_regression)
 
     train_parser.add_argument("-d", "--training_data_file", type=str, required=True)
-    train_parser.add_argument("-s", "--dump_dir", type=str, required=True)
+    train_parser.add_argument("-s", "--save_dir", type=str, required=True)
     train_parser.add_argument("-t", "--threshold", type=float, default=0.99)
 
+    predict_parser = subparsers.add_parser(
+        "predict", help="Run predictions using a previously trained model on a list of files and dump the results"
+    )
+    predict_parser.set_defaults(func=predict_on_csv)
+    predict_parser.add_argument("-m", "--model_json", type=str, required=True)
+    predict_parser.add_argument("-f", "--prediction_files", nargs=2, type=str, action="append", required=True)
+    predict_parser.add_argument("-s", "--save_dir", type=str, required=True)
 
     args = global_parser.parse_args()
     args.func(**vars(args))
